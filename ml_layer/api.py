@@ -5,9 +5,9 @@ from pathlib import Path
 import shutil
 import os
 
-from inference_stage1 import run_stage1_inference
-from georeference import bbox_to_geojson_polygon
-from export_payload import build_backend_payload
+from .inference_stage1 import run_stage1_inference
+from .georeference import bbox_to_geojson_polygon
+from .export_payload import build_backend_payload
 
 app = FastAPI()
 
