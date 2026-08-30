@@ -5,8 +5,11 @@ from .export_payload import build_backend_payload
 import shutil
 import os
 from datetime import datetime
+from pathlib import Path
 
 app = FastAPI()
+BASE_DIR = Path(__file__).resolve().parent.parent
+WEIGHTS_PATH = BASE_DIR / "ml_layer" / "weights" / "best.pt"
 
 @app.post("/predict")
 async def predict_spill(file: UploadFile = File(...)):
