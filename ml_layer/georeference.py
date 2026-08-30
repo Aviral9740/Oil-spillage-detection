@@ -26,15 +26,50 @@ def pixel_to_wgs84(pixel_x, pixel_y, patch_width, patch_height, corners):
 
     return lon, lat
 
-def bbox_to_geojson_polygon(bbox, patch_width, patch_height, corners):
-    xmin, ymin, xmax, ymax = bbox
+def bbox_to_geojson_polygon(bbox_pixels, patch_width, patch_height, corners):
+    """
+    Translates YOLO pixel bounding boxes to WGS84 coordinates using Bilinear Interpolation 
+    to account for satellite orbit rotation and image skew.
+    """
+    xmin, ymin, xmax, ymax = bbox_pixels
     
-    p_ul = pixel_to_wgs84(xmin, ymin, patch_width, patch_height, corners)
-    p_ur = pixel_to_wgs84(xmax, ymin, patch_width, patch_height, corners)
-    p_br = pixel_to_wgs84(xmax, ymax, patch_width, patch_height, corners)
-    p_bl = pixel_to_wgs84(xmin, ymax, patch_width, patch_height, corners)
+    ul_lon, ul_lat = corners['ul']
+    ur_lon, ur_lat = corners['ur']
+    bl_lon, bl_lat = corners['bl']
+    br_lon, br_lat = corners['br']
+    
+    def pixel_to_coords(x, y):
+        # Normalize pixel coordinates (0.0 to 1.0)
+        nx = x / patch_width
+        ny = y / patch_height
+        
+        # 1. Interpolate across the Top and Bottom edges (Longitude)
+        top_lon = ul_lon + nx * (ur_lon - ul_lon)
+        bottom_lon = bl_lon + nx * (br_lon - bl_lon)
+        
+        # 2. Interpolate across the Top and Bottom edges (Latitude)
+        top_lat = ul_lat + nx * (ur_lat - ul_lat)
+        bottom_lat = bl_lat + nx * (br_lat - bl_lat)
+        
+        # 3. Interpolate vertically down to the specific Y pixel
+        lon = top_lon + ny * (bottom_lon - top_lon)
+        lat = top_lat + ny * (bottom_lat - top_lat)
+        
+        return [round(lon, 6), round(lat, 6)]
 
-    # GeoJSON coordinates format: [[lon, lat], ...] closed polygon
-    coords = [p_ul, p_ur, p_br, p_bl, p_ul]
-    poly = Polygon(coords)
-    return mapping(poly)
+    # Convert the 4 pixel corners of the bounding box
+    top_left = pixel_to_coords(xmin, ymin)
+    top_right = pixel_to_coords(xmax, ymin)
+    bottom_right = pixel_to_coords(xmax, ymax)
+    bottom_left = pixel_to_coords(xmin, ymax)
+    
+    return {
+        "type": "Polygon",
+        "coordinates": [[
+            top_left, 
+            top_right, 
+            bottom_right, 
+            bottom_left, 
+            top_left
+        ]]
+    }
