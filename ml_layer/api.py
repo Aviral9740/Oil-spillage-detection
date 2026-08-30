@@ -1,7 +1,7 @@
 from fastapi import FastAPI, UploadFile, File
-from inference_stage1 import run_stage1_inference
-from georeference import bbox_to_geojson_polygon
-from export_payload import build_backend_payload
+from .inference_stage1 import run_stage1_inference
+from .georeference import bbox_to_geojson_polygon
+from .export_payload import build_backend_payload
 import shutil
 import os
 from datetime import datetime
