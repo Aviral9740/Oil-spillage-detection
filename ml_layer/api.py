@@ -11,7 +11,7 @@ from .export_payload import build_backend_payload
 app = FastAPI()
 
 CURRENT_DIR = Path(__file__).resolve().parent
-WEIGHTS_PATH = CURRENT_DIR / "weights" / "best.pt"
+WEIGHTS_PATH = CURRENT_DIR / "weights" / "best.onnx"
 
 model = YOLO(str(WEIGHTS_PATH))
 
