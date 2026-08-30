@@ -1,11 +1,10 @@
 from fastapi import FastAPI, UploadFile, File, Form
-from typing import Optional
 from datetime import datetime
 from pathlib import Path
 import shutil
 import os
+from ultralytics import YOLO
 
-from .inference_stage1 import run_stage1_inference
 from .georeference import bbox_to_geojson_polygon
 from .export_payload import build_backend_payload
 
@@ -13,6 +12,8 @@ app = FastAPI()
 
 CURRENT_DIR = Path(__file__).resolve().parent
 WEIGHTS_PATH = CURRENT_DIR / "weights" / "best.pt"
+
+model = YOLO(str(WEIGHTS_PATH))
 
 @app.post("/predict")
 async def predict_spill(
@@ -30,8 +31,21 @@ async def predict_spill(
     with open(temp_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
         
-    detections = run_stage1_inference(str(WEIGHTS_PATH), temp_path, conf_threshold=0.50)
+    # Pass the image directly to the globally loaded model
+    inference_results = model(temp_path, conf=0.50)
     os.remove(temp_path)
+    
+    # Extract bounding boxes and exact image dimensions dynamically
+    detections = []
+    for r in inference_results:
+        img_height, img_width = r.orig_shape
+        for box in r.boxes:
+            detections.append({
+                "bbox_pixels": box.xyxy[0].tolist(),
+                "confidence": float(box.conf[0]),
+                "width": img_width,
+                "height": img_height
+            })
     
     if not detections:
         return {"status": "no_spill_detected", "detections": []}
@@ -47,7 +61,12 @@ async def predict_spill(
         
     results = []
     for det in detections:
-        geojson_poly = bbox_to_geojson_polygon(det["bbox_pixels"], 1250, 1250, corners)
+        geojson_poly = bbox_to_geojson_polygon(
+            det["bbox_pixels"], 
+            det["width"], 
+            det["height"], 
+            corners
+        )
         wgs84_coords = geojson_poly['coordinates'][0]
         
         payload = build_backend_payload(wgs84_coords, current_time, det["confidence"])
