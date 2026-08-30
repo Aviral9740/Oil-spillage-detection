@@ -20,7 +20,7 @@ async def predict_spill(file: UploadFile = File(...)):
         
     # 2. Run Inference
     # Ensure the path to your weights file is correct for your deployment structure
-    detections = run_stage1_inference("weights/best.pt", temp_path, conf_threshold=0.50)
+    detections = run_stage1_inference(str(WEIGHTS_PATH), temp_path, conf_threshold=0.50)
     os.remove(temp_path)
     
     if not detections:
