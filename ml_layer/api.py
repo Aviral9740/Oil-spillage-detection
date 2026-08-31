@@ -78,7 +78,6 @@ async def predict_spill(
 async def health_check():
     return {
         "status": "active",
-        "timestamp": datetime.utcnow().isoformat()
     }
 
 @app.get("/")

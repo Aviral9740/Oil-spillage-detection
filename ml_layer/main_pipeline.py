@@ -1,90 +1,84 @@
-import requests
+import csv
 import json
-import time
 from pathlib import Path
 from datetime import datetime
-import pandas as pd
-
-from inference_stage1 import run_stage1_inference
+from ultralytics import YOLO
 from georeference import bbox_to_geojson_polygon
 from export_payload import build_backend_payload
 
-def process_batch_directory(val_images_dir, weights_path, metadata_path, backend_api_url):
-    df = pd.read_excel(metadata_path)
-    img_col = next(c for c in df.columns if 'jpg' in str(c).lower() or 'IMAGE' in str(c))
-    time_col = next(c for c in df.columns if 'start_time' in str(c).lower())
-    
-    val_dir = Path(val_images_dir)
-    image_paths = list(val_dir.glob("*.jpg"))
-    
-    if not image_paths:
-        print(f"No images found in {val_images_dir}")
-        return
+# Configuration
+HISTORICAL_DATA_DIR = Path("./data/oil/coast")
+JSON_OUTPUT_DIR = Path("./data/json_outputs/coast")
+MODEL_PATH = Path("./ml_layer/weights/best.onnx")
 
-    print(f"Starting batch processing of {len(image_paths)} images...")
-    
-    success_count = 0
-    
-    for img_path in image_paths:
-        img_filename = img_path.name
-        print(f"\nProcessing {img_filename}...")
+JSON_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+model = YOLO(str(MODEL_PATH))
+
+# Load metadata from CSV once when the script starts
+historical_metadata = {}
+try:
+    with open("./data/data_table.csv", mode="r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            img_name = row["IMAGE (jpg_file)"]
+            historical_metadata[img_name] = row["Date/Time (start_time)"]
+            
+except FileNotFoundError:
+    print("Warning: historical_metadata.csv not found. Using fallback timestamps.")
+except KeyError as e:
+    print(f"Error: Column {e} not found in CSV. Check your exact column headers.")
+
+
+def process_historical_batch():
+    # Iterate through all images in the folder
+    for img_path in HISTORICAL_DATA_DIR.glob("*.jpg"):
         
         # 1. Run Inference
-        detections = run_stage1_inference(weights_path, str(img_path), conf_threshold=0.50)
-        if not detections:
-            print("No spills detected. Skipping.")
-            continue
-
-        # 2. Extract Metadata
-        record = df[df[img_col] == img_filename]
-        if record.empty:
-            print("Metadata missing. Cannot georeference.")
-            continue
-            
-        record = record.iloc[0]
-        acquisition_time = pd.to_datetime(record[time_col])
-
-        corners = {
-            'ul': (float(record['Longitude (patch_ul_lon)']), float(record['Latitude (patch_ul_lat)'])),
-            'ur': (float(record['Longitude (patch_ur_lon)']), float(record['Latitude (patch_ur_lat)'])),
-            'br': (float(record['Longitude (patch_br_lon)']), float(record['Latitude (patch_br_lat)'])),
-            'bl': (float(record['Longitude (patch_bl_lon)']), float(record['Latitude (patch_bl_lat)']))
-        }
+        inference_results = model(str(img_path), conf=0.50)
         
-        patch_width = float(record.get('Width [pixel] (patch_width)', 1250))
-        patch_height = float(record.get('Height [pixel] (patch_height)', 1250))
-
-        # 3. Process Detections
-        for det in detections:
-            bbox_pixels = det["bbox_pixels"]
-            confidence = det["confidence"]
-
-            geojson_poly = bbox_to_geojson_polygon(bbox_pixels, patch_width, patch_height, corners)
-            wgs84_coords = geojson_poly['coordinates'][0]
-            payload = build_backend_payload(wgs84_coords, acquisition_time, confidence)
-            
-            # 4. Transmit
-            try:
-                response = requests.post(backend_api_url, json=payload, headers={"Content-Type": "application/json"})
-                if response.status_code in [200, 201]:
-                    print(f"  -> Transmitted payload {payload['spill_id']}")
-                    success_count += 1
-                else:
-                    print(f"  -> Backend rejected: {response.status_code} - {response.text}")
-            except requests.exceptions.RequestException as e:
-                print(f"  -> Connection failed: {e}")
+        corners = get_historical_corners(img_path.name) 
+        historical_time = extract_timestamp(img_path.name)
+        
+        image_detections = []
+        
+        for r in inference_results:
+            img_height, img_width = r.orig_shape
+            for box in r.boxes:
+                bbox_pixels = box.xyxy[0].tolist()
+                confidence = float(box.conf[0])
                 
-            # Throttle requests to avoid overwhelming the server
-            time.sleep(1)
+                geojson_poly = bbox_to_geojson_polygon(bbox_pixels, img_width, img_height, corners)
+                wgs84_coords = geojson_poly['coordinates'][0]
+                
+                payload = build_backend_payload(wgs84_coords, historical_time, confidence)
+                image_detections.append(payload)
 
-    print(f"\nBatch processing complete. Successfully transmitted {success_count} spills.")
+        # 2. Save individual JSON file for this specific image
+        if image_detections:
+            output_filename = JSON_OUTPUT_DIR / f"{img_path.stem}.json"
+            
+            with open(output_filename, "w") as json_file:
+                json.dump({"detections": image_detections}, json_file, indent=4)
+                
 
-if __name__ == "__main__":
-    PROJECT_ROOT = Path(__file__).resolve().parent.parent
+def get_historical_corners(filename):
+    # Placeholder: Replace with logic to look up coordinates from your historical dataset
+    return {
+        'ul': (24.0000, 35.1000), 'ur': (24.1000, 35.1000),
+        'bl': (24.0000, 35.0000), 'br': (24.1000, 35.0000)
+    }
+
+def extract_timestamp(filename):
+    # 1. Get the raw text string from the CSV dictionary
+    # Provide a default string that matches the same format
+    raw_time_str = historical_metadata.get(filename, "1970-01-01T00:00:00")
     
-    process_batch_directory(
-        val_images_dir=str(PROJECT_ROOT / "data" / "yolo_dataset" / "images" / "val"),
-        weights_path=str(PROJECT_ROOT /"runs" / "detect" / "oil_spill_detection" / "stage1_yolo" / "weights" / "best.pt"),
-        metadata_path=str(PROJECT_ROOT / "data" / "data_table.xlsx"),
-        backend_api_url="	https://webhook.site/06dfc3bf-1d80-44c1-82ad-a8ad33d02e4a"  # Replace with actual API once ready
-    )
+    # 2. Convert the string into a Python datetime object
+    try:
+        # Matches your exact CSV format: "2019-01-01T03:42:35"
+        return datetime.strptime(raw_time_str, "%Y-%m-%dT%H:%M:%S")
+    except ValueError:
+        print(f"Warning: Could not parse date format '{raw_time_str}' for {filename}. Using default time.")
+        return datetime.utcnow()
+if __name__ == "__main__":
+    process_historical_batch()
