@@ -1,12 +1,13 @@
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, status
 from datetime import datetime
 from pathlib import Path
 import shutil
+import tempfile
 import os
 from ultralytics import YOLO
-
-from .georeference import bbox_to_geojson_polygon
-from .export_payload import build_backend_payload
+from typing import List, Dict, Any
+from georeference import bbox_to_geojson_polygon
+from export_payload import build_backend_payload
 
 app = FastAPI()
 
@@ -15,64 +16,96 @@ WEIGHTS_PATH = CURRENT_DIR / "weights" / "best.onnx"
 
 model = YOLO(str(WEIGHTS_PATH))
 
-@app.post("/predict")
+@app.post("/predict", status_code=status.HTTP_200_OK)
 async def predict_spill(
-    file: UploadFile = File(...),
-    ul_lon: float = Form(24.0000),
-    ul_lat: float = Form(35.1000),
-    ur_lon: float = Form(24.1000),
-    ur_lat: float = Form(35.1000),
-    bl_lon: float = Form(24.0000),
-    bl_lat: float = Form(35.0000),
-    br_lon: float = Form(24.1000),
-    br_lat: float = Form(35.0000)
-):
-    temp_path = f"temp_{file.filename}"
-    with open(temp_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-        
-    # Pass the image directly to the globally loaded model
-    inference_results = model(temp_path, conf=0.50)
-    os.remove(temp_path)
+    file: UploadFile = File(..., description="Satellite image (.jpg or .png)"),
+    capture_time: str = Form(..., description="Satellite capture timestamp in ISO format (e.g., 2026-09-01T11:05:00)"),
+    # Upper-Left
+    ul_lat: float = Form(..., description="Upper-Left Latitude"),
+    ul_lon: float = Form(..., description="Upper-Left Longitude"),
+    # Upper-Right
+    ur_lat: float = Form(..., description="Upper-Right Latitude"),
+    ur_lon: float = Form(..., description="Upper-Right Longitude"),
+    # Bottom-Left
+    bl_lat: float = Form(..., description="Bottom-Left Latitude"),
+    bl_lon: float = Form(..., description="Bottom-Left Longitude"),
+    # Bottom-Right
+    br_lat: float = Form(..., description="Bottom-Right Latitude"),
+    br_lon: float = Form(..., description="Bottom-Right Longitude"),
+    conf_threshold: float = Form(0.50, description="Confidence threshold for detection")
+) -> Dict[str, Any]:
     
-    # Extract bounding boxes and exact image dimensions dynamically
-    detections = []
-    for r in inference_results:
-        img_height, img_width = r.orig_shape
-        for box in r.boxes:
-            detections.append({
-                "bbox_pixels": box.xyxy[0].tolist(),
-                "confidence": float(box.conf[0]),
-                "width": img_width,
-                "height": img_height
-            })
-    
-    if not detections:
-        return {"status": "no_spill_detected", "detections": []}
-        
-    current_time = datetime.utcnow()
-    
+    # 1. Validate & Parse Timestamp
+    parsed_time = None
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d %H:%M:%S"):
+        try:
+            parsed_time = datetime.strptime(capture_time, fmt)
+            break
+        except ValueError:
+            continue
+
+    if not parsed_time:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid capture_time format. Supported formats: 'YYYY-MM-DDTHH:MM:SS', 'YYYY-MM-DDTHH:MM:SSZ', or 'YYYY-MM-DD HH:MM:SS'"
+        )
+
+    # 2. Package Spatial Bounding Corners
     corners = {
         'ul': (ul_lon, ul_lat),
         'ur': (ur_lon, ur_lat),
         'bl': (bl_lon, bl_lat),
         'br': (br_lon, br_lat)
     }
+
+    # 3. Securely handle uploaded image stream via temp file
+    suffix = Path(file.filename).suffix if file.filename else ".jpg"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
+        shutil.copyfileobj(file.file, tmp_file)
+        tmp_path = tmp_file.name
+
+    try:
+        # 4. Run YOLO ONNX Inference
+        inference_results = model(tmp_path, conf=conf_threshold)
         
-    results = []
-    for det in detections:
-        geojson_poly = bbox_to_geojson_polygon(
-            det["bbox_pixels"], 
-            det["width"], 
-            det["height"], 
-            corners
+        detections: List[Dict[str, Any]] = []
+
+        for r in inference_results:
+            img_height, img_width = r.orig_shape
+            for box in r.boxes:
+                bbox_pixels = box.xyxy[0].tolist()
+                confidence = float(box.conf[0])
+
+                # Convert pixel bounding box to geographic WGS84 polygon
+                geojson_poly = bbox_to_geojson_polygon(bbox_pixels, img_width, img_height, corners)
+                wgs84_coords = geojson_poly['coordinates'][0]
+
+                # Use original filename as reference
+                payload = build_backend_payload(
+                    wgs84_coords,
+                    parsed_time,
+                    confidence,
+                    file.filename
+                )
+                detections.append(payload)
+
+        return {
+            "status": "success",
+            "filename": file.filename,
+            "detected_at": parsed_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "spills_found": len(detections),
+            "detections": detections
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Inference error: {str(e)}"
         )
-        wgs84_coords = geojson_poly['coordinates'][0]
-        
-        payload = build_backend_payload(wgs84_coords, current_time, det["confidence"])
-        results.append(payload)
-        
-    return {"status": "success", "detections": results}
+    finally:
+        # Always cleanup temporary image file from disk
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 @app.get("/health")
 async def health_check():
@@ -83,3 +116,6 @@ async def health_check():
 @app.get("/")
 async def root():
     return {"message": "Oil Spill Detection API is running. Send POST requests to /predict."}
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
