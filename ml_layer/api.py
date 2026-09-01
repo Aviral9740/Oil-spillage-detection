@@ -6,8 +6,8 @@ import tempfile
 import os
 from ultralytics import YOLO
 from typing import List, Dict, Any
-from georeference import bbox_to_geojson_polygon
-from export_payload import build_backend_payload
+from .georeference import bbox_to_geojson_polygon
+from .export_payload import build_backend_payload
 
 app = FastAPI()
 
