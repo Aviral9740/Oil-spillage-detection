@@ -4,10 +4,19 @@ from pathlib import Path
 from PIL import Image
 from ultralytics import YOLO
 from typing import List, Dict, Any
+from fastapi.middleware.cors import CORSMiddleware
 from .georeference import bbox_to_geojson_polygon
 from .export_payload import build_backend_payload
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 CURRENT_DIR = Path(__file__).resolve().parent
 WEIGHTS_PATH = CURRENT_DIR / "weights" / "best.onnx"
