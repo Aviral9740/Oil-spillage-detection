@@ -1,9 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, status
 from datetime import datetime
 from pathlib import Path
-import shutil
-import tempfile
-import os
+from PIL import Image
 from ultralytics import YOLO
 from typing import List, Dict, Any
 from .georeference import bbox_to_geojson_polygon
@@ -16,8 +14,9 @@ WEIGHTS_PATH = CURRENT_DIR / "weights" / "best.onnx"
 
 model = YOLO(str(WEIGHTS_PATH))
 
+# NOTE: Removed 'async' from def predict_spill to run the heavy model on a background thread
 @app.post("/predict", status_code=status.HTTP_200_OK)
-async def predict_spill(
+def predict_spill(
     file: UploadFile = File(..., description="Satellite image (.jpg or .png)"),
     capture_time: str = Form(..., description="Satellite capture timestamp in ISO format (e.g., 2026-09-01T11:05:00)"),
     # Upper-Left
@@ -58,15 +57,12 @@ async def predict_spill(
         'br': (br_lon, br_lat)
     }
 
-    # 3. Securely handle uploaded image stream via temp file
-    suffix = Path(file.filename).suffix if file.filename else ".jpg"
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
-        shutil.copyfileobj(file.file, tmp_file)
-        tmp_path = tmp_file.name
-
     try:
-        # 4. Run YOLO ONNX Inference
-        inference_results = model(tmp_path, conf=conf_threshold)
+        # 3. Read image directly into RAM (Bypasses Disk I/O completely)
+        img = Image.open(file.file)
+        
+        # 4. Run YOLO ONNX Inference on RAM object with resolution locked to 640
+        inference_results = model(img, conf=conf_threshold, imgsz=640)
         
         detections: List[Dict[str, Any]] = []
 
@@ -102,10 +98,6 @@ async def predict_spill(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Inference error: {str(e)}"
         )
-    finally:
-        # Always cleanup temporary image file from disk
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
 
 @app.get("/health")
 async def health_check():
@@ -116,6 +108,7 @@ async def health_check():
 @app.get("/")
 async def root():
     return {"message": "Oil Spill Detection API is running. Send POST requests to /predict."}
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
