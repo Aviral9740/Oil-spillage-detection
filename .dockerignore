@@ -1,0 +1,33 @@
+# Version control / editor cruft
+.git
+.gitignore
+.vscode
+.idea
+**/__pycache__
+**/*.pyc
+
+# Training-only assets -- not needed by the serving image.
+# api.py only ever loads ml_layer/weights/best.onnx.
+ml_layer/weights/best.pt
+yolov8n.pt
+ml_layer/train_yolo.py
+ml_layer/export_yolo.py
+ml_layer/dataset.py
+ml_layer/generate_synthetic_ais.py
+ml_layer/visualize_ais.py
+ml_layer/visualize_val.py
+ml_layer/test_ais.py
+ml_layer/test_dataset.py
+ml_layer/main_pipeline.py
+ml_layer/ais_correlation.py
+ml_layer/oil_spill.yaml
+ml_layer/inference_stage1.py
+data/
+runs/
+inference_results/
+*.json
+requirements-dev.txt
+
+# Local dev files
+.env
+*.log
