@@ -4,3 +4,6 @@ failed_payload_spill_c07d1c.json
 failed_payload_spill_f1ba07.json
 /cdse_fetch/
 zenodo_scene_extents.csv
+check_datetime.py
+tif_to_png.py
+/previews/
